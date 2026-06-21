@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=64", "versioningit>=3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vizit"
+description = "A simple tool for visualizing data"
+readme = "README.md"
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Alex Holehouse", email = "alex.holehouse@wustl.edu" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "matplotlib",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+[project.scripts]
+vizit = "vizit.cli:main"
+
+[tool.setuptools]
+packages = ["vizit"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+vizit = ["data/*.dat"]
+
+[tool.versioningit]
+# Automatic version numbering from git tags (replaces versioneer)
+
+[tool.versioningit.vcs]
+method = "git"
+match = ["*"]
+
+[tool.versioningit.format]
+distance = "{base_version}.post{distance}+{vcs}{rev}"
+dirty = "{base_version}+d{build_date:%Y%m%d}"
+distance-dirty = "{base_version}.post{distance}+{vcs}{rev}.d{build_date:%Y%m%d}"
+
+[tool.versioningit.write]
+file = "vizit/_version.py"
+
+[tool.coverage.run]
+omit = [
+    "*/tests/*",
+    "vizit/_version.py",
+]
+
+[tool.ruff]
+line-length = 119
+extend-exclude = ["vizit/_version.py"]
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+exclude = ["vizit/_version\\.py"]
+
+[[tool.mypy.overrides]]
+module = "vizit.tests.*"
+disallow_untyped_defs = false

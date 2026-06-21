@@ -1,12 +1,16 @@
-"""
-Unit and regression test for the vizit package.
-"""
+"""Smoke test for the top-level :mod:`vizit` package."""
 
-# Import package, test suite, and other packages as needed
+from __future__ import annotations
+
 import vizit
-import pytest
-import sys
 
-def test_vizit_imported():
-    """Sample test, will always pass so long as import statement worked"""
-    assert "vizit" in sys.modules
+
+def test_public_api_exposed() -> None:
+    """The documented public names are importable from the package root."""
+    for name in ("load", "Dataset", "line", "scatter", "hist", "bar", "PlotConfig"):
+        assert hasattr(vizit, name)
+
+
+def test_version_is_a_string() -> None:
+    assert isinstance(vizit.__version__, str)
+    assert vizit.__version__

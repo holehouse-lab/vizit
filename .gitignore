@@ -100,3 +100,6 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# versioningit-generated version file
+vizit/_version.py

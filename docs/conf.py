@@ -23,14 +23,13 @@ import vizit
 # -- Project information -----------------------------------------------------
 
 project = 'vizit'
-copyright = ("2020, Alex Holehouse. Project structure based on the "
-             "Computational Molecular Science Python Cookiecutter version 1.1")
+copyright = '2020-2026, Alex Holehouse'
 author = 'Alex Holehouse'
 
-# The short X.Y version
-version = ''
-# The full version, including alpha/beta/rc tags
-release = ''
+# The full version, including alpha/beta/rc tags, taken from the installed package.
+release = vizit.__version__
+# The short X.Y version.
+version = release.split('+')[0]
 
 
 # -- General configuration ---------------------------------------------------
@@ -57,6 +56,12 @@ napoleon_google_docstring = False
 napoleon_use_param = False
 napoleon_use_ivar = True
 
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None),
+    'numpy': ('https://numpy.org/doc/stable', None),
+    'matplotlib': ('https://matplotlib.org/stable', None),
+}
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
@@ -74,7 +79,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
