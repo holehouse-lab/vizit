@@ -5,6 +5,12 @@ The loader handles the fiddly parts of real scientific data files: comment
 lines (``#``/``@``), a variety of column separators, an optional header row of
 column names, and clear, line-numbered error messages when a value cannot be
 parsed. ``"-"`` reads from standard input so vizit can be used in pipelines.
+
+Non-numeric columns are tolerated. Data files frequently carry a label column
+(a stage name, a residue code) alongside the numbers, and there is no reason to
+reject the whole file over a column the user never plots. Such columns are read
+as ``NaN`` and flagged; an error is raised only if one is actually selected for
+plotting. See :meth:`vizit.dataset.Dataset.column`.
 """
 
 from __future__ import annotations
@@ -21,9 +27,13 @@ from .dataset import Dataset
 
 __all__ = ["load"]
 
-# Separators tried, in order, when ``sep`` is not given. ``None`` means "any run
-# of whitespace" (numpy's default split behaviour).
-_AUTO_SEPARATORS: tuple[str | None, ...] = (None, ",", "\t", ";")
+# Separators tried, in order, when ``sep`` is not given. Explicit delimiters are
+# preferred over whitespace (``None``, meaning "any run of whitespace") so that a
+# tab-separated file with spaces inside a text field splits on tabs.
+_AUTO_SEPARATORS: tuple[str | None, ...] = (",", "\t", ";", None)
+
+# Number of data lines sampled when auto-detecting the separator.
+_SNIFF_LINES = 50
 
 
 def load(
@@ -86,28 +96,29 @@ def load(
 
     # Resolve the separator once so header detection, header splitting and data
     # parsing all agree (auto-detection from a header row would otherwise differ
-    # from auto-detection from the numeric data rows).
+    # from auto-detection from the data rows).
     effective_sep = sep if sep is not None else _resolve_separator(data_lines)
 
     names: list[str] | None = None
-    first_line = data_lines[0][1]
-    first_is_header = header is True or (header is None and not _is_numeric_row(first_line, effective_sep))
+    first_is_header = header is True or (
+        header is None and _looks_like_header([_split(line, effective_sep) for _, line in data_lines[:2]])
+    )
     if first_is_header:
-        names = _split(first_line, effective_sep)
+        names = _split(data_lines[0][1], effective_sep)
         data_lines = data_lines[1:]
 
     if skip_rows:
         data_lines = data_lines[skip_rows:]
 
     if not data_lines:
-        raise DataError(f"{source_name} contains no numeric rows")
+        raise DataError(f"{source_name} contains no data rows")
 
-    data = _parse_rows(data_lines, effective_sep, source_name)
+    data, non_numeric = _parse_table(data_lines, effective_sep, source_name)
 
     if names is not None and len(names) != data.shape[1]:
         raise DataError(f"{source_name}: header has {len(names)} names but data has {data.shape[1]} columns")
 
-    return Dataset(data=data, names=names, source=source_name)
+    return Dataset(data=data, names=names, source=source_name, non_numeric=non_numeric)
 
 
 # ----------------------------------------------------------------------
@@ -154,45 +165,6 @@ def _split(line: str, sep: str | None) -> list[str]:
     return [tok.strip() for tok in line.split(sep)]
 
 
-def _is_numeric_row(line: str, sep: str | None) -> bool:
-    """Return whether every token on ``line`` parses as a float."""
-    tokens = _split(line, sep)
-    if not tokens:
-        return False
-    for tok in tokens:
-        try:
-            float(tok)
-        except ValueError:
-            return False
-    return True
-
-
-def _detect_separator(line: str) -> str | None:
-    """Pick the separator that yields the most numeric tokens for ``line``."""
-    best_sep: str | None = None
-    best_count = 0
-    for candidate in _AUTO_SEPARATORS:
-        tokens = _split(line, candidate)
-        if len(tokens) > 1 and all(_is_float(tok) for tok in tokens):
-            if len(tokens) > best_count:
-                best_sep, best_count = candidate, len(tokens)
-    return best_sep
-
-
-def _resolve_separator(data_lines: list[tuple[int, str]]) -> str | None:
-    """Detect the separator from the first line that parses as numeric data.
-
-    A header line (non-numeric) yields no detectable separator, so we scan past
-    it to a real data row. Falls back to whitespace (``None``) for single-column
-    data where no delimiter is present.
-    """
-    for _lineno, line in data_lines:
-        sep = _detect_separator(line)
-        if sep is not None:
-            return sep
-    return None
-
-
 def _is_float(token: str) -> bool:
     try:
         float(token)
@@ -201,33 +173,90 @@ def _is_float(token: str) -> bool:
         return False
 
 
-def _parse_rows(
+def _resolve_separator(data_lines: list[tuple[int, str]]) -> str | None:
+    """Pick the separator that splits every sampled line into the same >1 count.
+
+    Explicit delimiters are tried before whitespace so that, for example, a
+    tab-separated file with spaces inside a text field is split on tabs rather
+    than on every space. Falls back to whitespace (``None``) when no delimiter
+    produces a consistent multi-column split (as for single-column data).
+    """
+    sample = data_lines[:_SNIFF_LINES]
+    for candidate in _AUTO_SEPARATORS:
+        counts = {len(_split(line, candidate)) for _, line in sample}
+        if len(counts) == 1 and counts.pop() > 1:
+            return candidate
+    return None
+
+
+def _looks_like_header(rows: list[list[str]]) -> bool:
+    """Decide whether the first data line is a row of column names.
+
+    A file may legitimately carry a non-numeric column (a label, a stage name),
+    so "the first line isn't all numbers" is not enough to call it a header.
+    Instead we compare the first line against the second: it is a header only if
+    some column is non-numeric in the first line but numeric in the second — the
+    signature of names sitting above numbers.
+    """
+    if not rows:
+        return False
+    first = [_is_float(tok) for tok in rows[0]]
+    if all(first):
+        return False
+    if len(rows) < 2:
+        # Nothing to compare against: only an entirely non-numeric line reads as
+        # a header.
+        return not any(first)
+    second = [_is_float(tok) for tok in rows[1]]
+    return any(not a and b for a, b in zip(first, second, strict=False))
+
+
+def _parse_table(
     data_lines: list[tuple[int, str]],
     sep: str | None,
     source_name: str,
-) -> np.ndarray:
-    """Parse numeric rows into a 2-D float array.
+) -> tuple[np.ndarray, dict[int, tuple[int, str]]]:
+    """Parse data rows into a float array, tolerating non-numeric columns.
 
-    The separator is already resolved by the caller. Values are validated
-    eagerly so failures can name the exact file line and offending token;
-    numpy's own parse errors are opaque.
+    Columns that do not parse as numbers are filled with ``NaN`` rather than
+    raising: a text column the user never plots is not an error. The offending
+    line number and token are recorded per column so that
+    :meth:`~vizit.dataset.Dataset.column` can raise a precise error *if and when*
+    such a column is actually requested.
+
+    Returns
+    -------
+    tuple of (numpy.ndarray, dict)
+        The ``(n_rows, n_cols)`` float array, and a mapping of 0-based column
+        index to the ``(line number, token)`` of the first value that failed to
+        parse in that column.
     """
-    rows: list[list[float]] = []
+    tokens_per_row: list[list[str]] = []
     width: int | None = None
     for lineno, line in data_lines:
         tokens = _split(line, sep)
-        try:
-            values = [float(tok) for tok in tokens]
-        except ValueError as exc:
-            bad = next(tok for tok in tokens if not _is_float(tok))
-            raise DataError(f"{source_name}, line {lineno}: could not parse {bad!r} as a number") from exc
         if width is None:
-            width = len(values)
-        elif len(values) != width:
-            raise DataError(f"{source_name}, line {lineno}: expected {width} columns, got {len(values)}")
-        rows.append(values)
+            width = len(tokens)
+        elif len(tokens) != width:
+            raise DataError(f"{source_name}, line {lineno}: expected {width} columns, got {len(tokens)}")
+        tokens_per_row.append(tokens)
 
-    array = np.array(rows, dtype=np.float64)
-    if array.ndim == 1:  # pragma: no cover - guarded by width checks above
-        array = array.reshape(-1, 1)
-    return array
+    table = np.array(tokens_per_row, dtype=np.str_)
+    data = np.full(table.shape, np.nan, dtype=np.float64)
+    non_numeric: dict[int, tuple[int, str]] = {}
+
+    for col in range(table.shape[1]):
+        try:
+            data[:, col] = table[:, col].astype(np.float64)
+        except ValueError:
+            non_numeric[col] = _first_bad_value(table[:, col], data_lines)
+
+    return data, non_numeric
+
+
+def _first_bad_value(column: np.ndarray, data_lines: list[tuple[int, str]]) -> tuple[int, str]:
+    """Return the ``(line number, token)`` of the first non-numeric cell in a column."""
+    for (lineno, _line), token in zip(data_lines, column, strict=False):
+        if not _is_float(str(token)):
+            return lineno, str(token)
+    raise AssertionError("column was reported non-numeric but every value parsed")  # pragma: no cover

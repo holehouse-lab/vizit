@@ -6,8 +6,8 @@ replacement for quick gnuplot-style plotting, built on
 
 vizit is for the everyday case of *"I have some columns of numbers in a text
 file and I want to see them"* — while still handling headers, comments,
-multiple series, log axes, error bars, fits and a handful of plot types. It
-works three ways:
+multiple series, log axes, error bars, fits, heatmaps and a handful of plot
+types. It works three ways:
 
 - as a **command-line tool** — `vizit line data.dat -c 2`
 - as a **Python library** — `from vizit import load, line`
@@ -24,10 +24,12 @@ vizit line trajectory.dat -x 1 -c 2,3 --logy --title "Energy" -o energy.png
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [The data-file model](#the-data-file-model)
+  - [Text columns](#text-columns)
 - [Column references](#column-references)
 - [Command-line interface](#command-line-interface)
   - [Subcommands](#subcommands)
   - [Shared options](#shared-options)
+- [Heatmaps](#heatmaps)
 - [Reading from a pipe / stdin](#reading-from-a-pipe--stdin)
 - [Statistics & overlays](#statistics--overlays)
 - [Styling & output](#styling--output)
@@ -96,12 +98,15 @@ handles the messy realities of scientific data files:
 - **Comments.** Any line whose first non-blank character is `#` or `@` is
   ignored. Change the markers with `--comments` (e.g. `--comments '%'`), or pass
   `--comments ''` to disable comment handling. Blank lines are always skipped.
-- **Separators.** Whitespace, comma, tab and semicolon are auto-detected. Force
-  a specific one with `-s/--sep` — for example `-s ,` for CSV, or
-  ``-s $'\t'`` for tab-separated data.
-- **Headers.** If the first non-comment line is *not* all-numeric, it is taken
-  as a row of column names. You can then select columns by name. Force the
-  behaviour either way with `--header` / `--no-header`.
+- **Separators.** Comma, tab, semicolon and whitespace are auto-detected
+  (explicit delimiters win over whitespace, so a tab-separated file with spaces
+  inside a text field still splits correctly). Force one with `-s/--sep` — for
+  example `-s ,` for CSV, or ``-s $'\t'`` for tabs.
+- **Text columns are fine.** Only the columns you actually plot need to be
+  numeric — see [below](#text-columns).
+- **Headers.** If the first non-comment line looks like a row of names sitting
+  above numbers, it is used for column names, which you can then select by name.
+  Force the behaviour either way with `--header` / `--no-header`.
 - **Scientific notation** (`1.5e-3`) is supported natively.
 - **Leading rows** can be discarded with `--skip-rows N` (applied after any
   header line is consumed).
@@ -121,8 +126,40 @@ time   energy   error
 > as a comment and skipped, so it is **not** used for names. Put the names on
 > their own uncommented line if you want name-based selection.
 
-Malformed input is reported with the exact file line number and offending
-token, e.g. `vizit: data.dat, line 4: could not parse 'NA' as a number`.
+### Text columns
+
+vizit only requires a column to be numeric **if you actually plot it**. Data
+files routinely carry a label column next to the numbers, and there's no reason
+that should stop you plotting the numbers:
+
+```
+# stage   step   T_K       E_pot_kJ_per_mol
+equil     10     597.297   343.947070
+equil     20     594.294   332.271920
+prod      30     300.000   -322.115226
+```
+
+Column 1 is text, so it's simply skipped:
+
+```bash
+vizit line DEMO_ENERGY.dat -c 4          # plot the energy — works fine
+vizit line DEMO_ENERGY.dat -x 2 -c 3,4   # step vs temperature and energy
+vizit line DEMO_ENERGY.dat               # no -c: plots every numeric column (2,3,4)
+```
+
+When you don't name columns explicitly, vizit plots the **numeric** columns and
+ignores the text ones. If you *do* ask for a text column, you get a precise
+error rather than a silent surprise:
+
+```
+$ vizit line DEMO_ENERGY.dat -c 1
+vizit: DEMO_ENERGY.dat: column 1 is not numeric — line 3 contains 'equil'; numeric columns are 2, 3, 4
+```
+
+Malformed values in a column you *are* plotting are reported the same way, with
+the exact line number and offending token. In Python, `Dataset.numeric_columns`
+lists the plottable columns and `Dataset.non_numeric` maps each text column to
+the first value that failed to parse.
 
 ---
 
@@ -149,9 +186,9 @@ columns.
 vizit <plot> <file> [options]
 ```
 
-`<plot>` is one of `line`, `scatter`, `hist`, `bar`. `<file>` is a path, or `-`
-to read standard input. Run `vizit <plot> --help` for the exact, up-to-date
-flag list.
+`<plot>` is one of `line`, `scatter`, `hist`, `bar`, `heatmap`. `<file>` is a
+path, or `-` to read standard input. Run `vizit <plot> --help` for the exact,
+up-to-date flag list.
 
 ### Subcommands
 
@@ -192,6 +229,24 @@ grouped bars).
 |---|---|
 | `-c, --cols` | 1-based value columns, comma-separated |
 | `-x` | 1-based column for bar positions (default: row index) |
+
+**`heatmap`** — render a CSV/TSV matrix with `imshow`. Give a **second file** to
+plot the element-wise ratio of the two matrices. See
+[Heatmaps](#heatmaps) below.
+
+| Flag | Meaning |
+|---|---|
+| `FILE2` | optional second matrix; the heatmap becomes the ratio `FILE / FILE2` |
+| `-c, --cols` | 1-based columns forming the matrix, comma-separated |
+| `--vmin`, `--vmax` | fix the color-scale limits (default: scale to the data) |
+| `--cmap` | matplotlib colormap. Defaults to `viridis`, or **`seismic`** for a ratio / `--auto-midpoint-zero` |
+| `--auto-midpoint-zero` | centre the color scale on zero, so zero is the midpoint colour (white, in `seismic`) |
+| `--log-color` | logarithmic color scale (needs positive values) |
+| `--cbar-label` | colorbar label |
+| `--no-colorbar` | hide the colorbar |
+| `--aspect` | `auto` (default, fills the axes) or `equal` (square cells) |
+| `--origin` | `upper` (default, first row at top) or `lower` |
+| `--interpolation` | `imshow` interpolation (default `nearest`, i.e. raw cells) |
 
 ### Shared options
 
@@ -235,6 +290,79 @@ Every subcommand accepts the following groups.
 |---|---|
 | `-o, --output PATH` | save figure; format inferred from extension (`.png`, `.pdf`, `.svg`, …) |
 | `--no-show` | do not open an interactive window |
+
+---
+
+## Heatmaps
+
+`vizit heatmap` treats the file as a **matrix** — each row of the file is a row
+of the image, each numeric column a column — and renders it with matplotlib's
+`imshow`:
+
+```bash
+vizit heatmap contacts.csv                     # CSV matrix
+vizit heatmap contacts.tsv                     # TSV works too (auto-detected)
+vizit heatmap contacts.csv --cmap viridis --aspect equal
+```
+
+A leading text column (row labels) is skipped automatically, and a header line
+supplies the column tick labels.
+
+### Ratio of two matrices
+
+Pass a **second file** and the heatmap becomes the element-wise ratio
+`FILE / FILE2`. The two matrices must have the same shape. Because a ratio is a
+diverging quantity, the colormap defaults to **`seismic`**:
+
+```bash
+vizit heatmap mutant.csv wildtype.csv
+```
+
+Pass `--cmap` to override it. Cells where the denominator is zero become `NaN`
+and are left blank rather than blowing up to infinity.
+
+Ratios are naturally symmetric about 1 on a log scale, so `--log-color` is often
+what you want:
+
+```bash
+vizit heatmap mutant.csv wildtype.csv --log-color --vmin 0.1 --vmax 10
+```
+
+### Centring the color scale on zero
+
+For data that spans zero — differences, log-ratios, ΔΔG — `--auto-midpoint-zero`
+pins zero to the **midpoint colour of the colormap** (white, in `seismic`), so
+the sign is readable at a glance and equal excursions either side of zero get
+equally intense colour:
+
+```bash
+vizit heatmap delta.csv --auto-midpoint-zero
+```
+
+The limits become symmetric, `±max(|vmin|, |vmax|)`, falling back to the data
+range when you don't set them. So a matrix spanning `-8 … 2` is scaled `-8 … 8`
+rather than letting the negative side dominate the colouring. Explicit limits are
+still respected (the larger magnitude wins):
+
+```bash
+vizit heatmap delta.csv --auto-midpoint-zero --vmin -4 --vmax 4
+```
+
+`--auto-midpoint-zero` also implies `seismic` unless you pass `--cmap`. It cannot
+be combined with `--log-color` — a log scale cannot include zero.
+
+### Fixing the color scale
+
+By default the color scale spans the data range. Set `--vmin` / `--vmax` to fix
+it — essential when you want several heatmaps to be directly comparable:
+
+```bash
+for f in run*.csv; do
+    vizit heatmap "$f" --vmin 0 --vmax 100 -o "${f%.csv}.png" --no-show
+done
+```
+
+Either limit can be given on its own; the other stays automatic.
 
 ---
 
@@ -312,7 +440,7 @@ shell you can do from Python. Each plotting function returns a matplotlib
 keep customising before saving or showing.
 
 ```python
-from vizit import load, line, scatter, hist, bar, PlotConfig
+from vizit import load, line, scatter, hist, bar, heatmap, PlotConfig
 
 # Load once into a Dataset, then plot.
 ds = load("data.dat")               # auto-detects separator/header/comments
@@ -321,6 +449,20 @@ ds = load("-", header=True)         # read stdin, force a header row
 
 fig = line(ds, cols=[2, 3], x=1, logy=True)
 fig.savefig("plot.png", dpi=300)
+```
+
+Heatmaps take one dataset, or two for a ratio:
+
+```python
+heatmap(load("contacts.csv"), vmin=0, vmax=1, cmap="viridis", show=False)
+
+# ratio of two matrices, on a log color scale
+heatmap(
+    load("mutant.csv"),
+    load("wildtype.csv"),
+    log_color=True, vmin=0.1, vmax=10, cmap="RdBu_r",
+    output="ratio.pdf", show=False,
+)
 ```
 
 Columns may be given by 1-based index or by name:
@@ -345,11 +487,22 @@ scatter(ds, x=1, y=2, fit=True, config=cfg, output="b.png")
 The `Dataset` container exposes the underlying numpy array and helpers:
 
 ```python
-ds.data            # 2-D float64 numpy array, shape (n_rows, n_cols)
+ds.data             # 2-D float64 numpy array, shape (n_rows, n_cols); NaN for text cells
 ds.n_rows, ds.n_cols
-ds.column(2)       # 1-D array of column 2 (1-based) — or ds.column("energy")
-ds.columns([2, 3]) # 2-D array of the selected columns
-ds.name_of(2)      # display label ("energy", or "col 2" if no header)
+ds.column(2)        # 1-D array of column 2 (1-based) — or ds.column("energy")
+ds.columns([2, 3])  # 2-D array of the selected columns
+ds.name_of(2)       # display label ("energy", or "col 2" if no header)
+ds.numeric_columns  # 1-based indices of the columns you can actually plot
+ds.non_numeric      # {0-based col: (line number, first bad token)} for text columns
+```
+
+Asking for a text column raises `DataError`; everything else just works:
+
+```python
+ds = load("DEMO_ENERGY.dat")   # column 1 is a text 'stage' label
+ds.numeric_columns             # [2, 3, 4]
+ds.column(4)                   # fine
+ds.column(1)                   # DataError: column 1 is not numeric — line 3 contains 'equil'
 ```
 
 Post-process the returned figure with the full matplotlib API:

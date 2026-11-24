@@ -93,6 +93,73 @@ Histogram
    from vizit import hist
    hist(load("samples.dat"), cols=[1], bins=30, density=True)
 
+Heatmap of a matrix
+-------------------
+
+.. code-block:: console
+
+   $ vizit heatmap contacts.csv --cmap viridis --aspect equal
+
+.. code-block:: python
+
+   from vizit import heatmap
+   heatmap(load("contacts.csv"), cmap="viridis", aspect="equal")
+
+Heatmap with a fixed color scale
+--------------------------------
+
+Fixing the limits makes separate heatmaps directly comparable:
+
+.. code-block:: console
+
+   $ vizit heatmap run1.csv --vmin 0 --vmax 100 -o run1.png --no-show
+   $ vizit heatmap run2.csv --vmin 0 --vmax 100 -o run2.png --no-show
+
+.. code-block:: python
+
+   heatmap(load("run1.csv"), vmin=0, vmax=100, output="run1.png", show=False)
+
+Ratio of two matrices
+---------------------
+
+A second file turns the heatmap into the element-wise ratio of the two
+matrices. A ratio is a diverging quantity, so the colormap defaults to
+``seismic``:
+
+.. code-block:: console
+
+   $ vizit heatmap mutant.csv wildtype.csv
+
+.. code-block:: python
+
+   heatmap(load("mutant.csv"), load("wildtype.csv"))
+
+Ratios sit symmetrically about 1 on a log scale, so a log color scale often
+reads best:
+
+.. code-block:: console
+
+   $ vizit heatmap mutant.csv wildtype.csv --log-color --vmin 0.1 --vmax 10
+
+.. code-block:: python
+
+   heatmap(load("mutant.csv"), load("wildtype.csv"), log_color=True, vmin=0.1, vmax=10)
+
+Centring the color scale on zero
+--------------------------------
+
+For data that spans zero — differences, log-ratios, ΔΔG — pin zero to the
+midpoint colour of the colormap (white, in ``seismic``). The limits become
+symmetric, so equal excursions either side of zero are equally intense:
+
+.. code-block:: console
+
+   $ vizit heatmap delta.csv --auto-midpoint-zero
+
+.. code-block:: python
+
+   heatmap(load("delta.csv"), auto_midpoint_zero=True)
+
 Reading from a pipe
 -------------------
 

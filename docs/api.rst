@@ -25,6 +25,8 @@ Plotting
 
 .. autofunction:: vizit.bar
 
+.. autofunction:: vizit.heatmap
+
 .. autoclass:: vizit.PlotConfig
    :members:
 

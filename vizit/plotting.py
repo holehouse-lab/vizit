@@ -1,6 +1,6 @@
 """
 The plotting API: :class:`PlotConfig` plus :func:`line`, :func:`scatter`,
-:func:`hist` and :func:`bar`.
+:func:`hist`, :func:`bar` and :func:`heatmap`.
 
 Each plot function turns a :class:`~vizit.dataset.Dataset` and a set of options
 into a matplotlib :class:`~matplotlib.figure.Figure`, which it returns so that
@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-__all__ = ["PlotConfig", "line", "scatter", "hist", "bar"]
+__all__ = ["PlotConfig", "line", "scatter", "hist", "bar", "heatmap"]
 
 
 @dataclass(slots=True)
@@ -185,9 +185,14 @@ def _x_values(ds: Dataset, x: int | str | None) -> tuple[np.ndarray, str | None]
 
 
 def _default_y_cols(ds: Dataset, x: int | str | None) -> list[int]:
-    """All columns except the chosen x column (1-based)."""
+    """The numeric columns, excluding the chosen x column (1-based).
+
+    Non-numeric columns are skipped rather than raising: when the user has not
+    named the columns explicitly, a text column in the file should be ignored,
+    not treated as something to plot.
+    """
     x_idx = ds.resolve(x) if x is not None else None
-    return [i + 1 for i in range(ds.n_cols) if i != x_idx]
+    return [c for c in ds.numeric_columns if c - 1 != x_idx]
 
 
 def line(
@@ -236,7 +241,7 @@ def line(
     cfg = _resolve_config(config, overrides)
     refs = list(cols) if cols is not None else _default_y_cols(ds, x)
     if not refs:
-        raise PlotError("no y columns to plot")
+        raise PlotError(f"{ds.source} has no numeric columns to plot")
 
     xv, xlabel = _x_values(ds, x)
     err = ds.column(yerr) if yerr is not None else None
@@ -296,7 +301,10 @@ def scatter(
     """
     cfg = _resolve_config(config, overrides)
     if y is None:
-        y = _default_y_cols(ds, x)[0]
+        candidates = _default_y_cols(ds, x)
+        if not candidates:
+            raise PlotError(f"{ds.source} has no numeric columns to plot")
+        y = candidates[0]
 
     xv, xlabel = _x_values(ds, x)
     yv = ds.column(y)
@@ -353,7 +361,9 @@ def hist(
     matplotlib.figure.Figure
     """
     cfg = _resolve_config(config, overrides)
-    refs = list(cols) if cols is not None else [i + 1 for i in range(ds.n_cols)]
+    refs: list[int | str] = list(cols) if cols is not None else list(ds.numeric_columns)
+    if not refs:
+        raise PlotError(f"{ds.source} has no numeric columns to plot")
 
     fig, ax = _make_figure(cfg)
     alpha = 1.0 if len(refs) == 1 else 0.6
@@ -409,7 +419,7 @@ def bar(
     cfg = _resolve_config(config, overrides)
     refs = list(cols) if cols is not None else _default_y_cols(ds, x)
     if not refs:
-        raise PlotError("no value columns to plot")
+        raise PlotError(f"{ds.source} has no numeric columns to plot")
 
     xv, xlabel = _x_values(ds, x)
     positions = np.arange(len(xv), dtype=float)
@@ -440,9 +450,220 @@ def bar(
     return _finish(fig, cfg)
 
 
+def heatmap(
+    ds: Dataset,
+    other: Dataset | None = None,
+    cols: Sequence[int | str] | None = None,
+    *,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    cmap: str | None = None,
+    colorbar: bool = True,
+    cbar_label: str | None = None,
+    log_color: bool = False,
+    auto_midpoint_zero: bool = False,
+    aspect: Literal["auto", "equal"] = "auto",
+    origin: Literal["upper", "lower"] = "upper",
+    interpolation: str = "nearest",
+    config: PlotConfig | None = None,
+    **overrides: Any,
+) -> Figure:
+    """Draw a matrix as a heatmap, or the ratio of two matrices.
+
+    The dataset is treated as a matrix: each row of the file is a row of the
+    image and each (numeric) column a column. When ``other`` is supplied, the
+    element-wise ratio ``ds / other`` is plotted instead; the two matrices must
+    have the same shape. Cells where the denominator is zero become ``NaN`` and
+    are left blank.
+
+    Parameters
+    ----------
+    ds : Dataset
+        The matrix to plot (the numerator, when ``other`` is given).
+    other : Dataset, optional
+        A second matrix of the same shape. When given, the heatmap shows the
+        element-wise ratio ``ds / other``, and the colormap defaults to
+        ``"seismic"`` (a diverging map) rather than matplotlib's default.
+    cols : sequence of int or str, optional
+        1-based indices or names of the columns forming the matrix. Defaults to
+        every numeric column, so a leading text label column is ignored.
+    vmin, vmax : float, optional
+        Lower and upper limits of the color scale. By default matplotlib scales
+        to the data range; set either (or both) to fix the scale — useful when
+        comparing several heatmaps.
+    auto_midpoint_zero : bool, optional
+        Center the color scale on zero, so that zero takes the midpoint colour of
+        the colormap (white, for ``"seismic"``) and equal deviations either side
+        of zero get equally intense colours. The limits become symmetric,
+        ``±max(|vmin|, |vmax|)``, falling back to the data range when ``vmin`` and
+        ``vmax`` are not given. Implies a ``"seismic"`` colormap unless ``cmap``
+        says otherwise. Cannot be combined with ``log_color``.
+    cmap : str, optional
+        Name of a matplotlib colormap (e.g. ``"viridis"``, ``"RdBu_r"``). Defaults
+        to matplotlib's own default, except for a ratio plot or
+        ``auto_midpoint_zero``, which default to the diverging ``"seismic"``.
+    colorbar : bool, optional
+        Whether to draw a colorbar. Default ``True``.
+    cbar_label : str, optional
+        Label for the colorbar. Defaults to ``"ratio"`` for a two-file plot and
+        ``"value"`` otherwise.
+    log_color : bool, optional
+        Use a logarithmic color scale. Useful for ratios, which are naturally
+        symmetric about 1 on a log scale. Requires strictly positive limits.
+    aspect : str, optional
+        Passed to :meth:`~matplotlib.axes.Axes.imshow`. ``"auto"`` (default)
+        fills the axes; ``"equal"`` keeps cells square.
+    origin : str, optional
+        ``"upper"`` (default) puts row 1 at the top, as in the file.
+    interpolation : str, optional
+        Passed to :meth:`~matplotlib.axes.Axes.imshow`. Default ``"nearest"``,
+        which shows the raw cells without smoothing.
+    config : PlotConfig, optional
+        Base configuration; keyword ``overrides`` are merged on top. Note that
+        the grid defaults to off for heatmaps.
+    **overrides
+        Any :class:`PlotConfig` field.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Raises
+    ------
+    PlotError
+        If there are no numeric columns, the two matrices differ in shape, a
+        logarithmic color scale is requested with non-positive limits, or
+        ``log_color`` and ``auto_midpoint_zero`` are combined.
+    """
+    from matplotlib.colors import CenteredNorm, LogNorm, Normalize
+
+    if log_color and auto_midpoint_zero:
+        raise PlotError("log_color and auto_midpoint_zero cannot be combined: a log scale cannot include zero")
+
+    # A grid drawn over an image is just noise, so heatmaps default it off.
+    base = config if config is not None else PlotConfig(grid=False)
+    cfg = _resolve_config(base, overrides)
+
+    matrix, labels = _matrix(ds, cols)
+    if other is not None:
+        denominator, _ = _matrix(other, cols)
+        if matrix.shape != denominator.shape:
+            raise PlotError(
+                f"cannot take a ratio: {ds.source} is {matrix.shape[0]}x{matrix.shape[1]} "
+                f"but {other.source} is {denominator.shape[0]}x{denominator.shape[1]}"
+            )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            matrix = np.divide(
+                matrix,
+                denominator,
+                out=np.full_like(matrix, np.nan),
+                where=denominator != 0,
+            )
+
+    # Both a ratio and a zero-centred scale are diverging quantities, and a
+    # diverging colormap is what makes the midpoint readable (white, in seismic).
+    if cmap is None and (other is not None or auto_midpoint_zero):
+        cmap = "seismic"
+
+    # imshow takes either (vmin, vmax) or a norm — never both — so a norm swallows
+    # the limits it was built from.
+    norm: Normalize | None = None
+    if log_color:
+        lo = vmin if vmin is not None else _finite_min(matrix)
+        if not np.isfinite(lo) or lo <= 0:
+            raise PlotError(
+                "a logarithmic color scale needs strictly positive values; "
+                "set vmin above 0 (cells that are zero or negative cannot be shown on a log scale)"
+            )
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+        vmin = vmax = None
+    elif auto_midpoint_zero:
+        norm = CenteredNorm(vcenter=0.0, halfrange=_zero_centred_halfrange(matrix, vmin, vmax))
+        vmin = vmax = None
+
+    fig, ax = _make_figure(cfg)
+    image = ax.imshow(
+        matrix,
+        cmap=cmap,
+        norm=norm,
+        vmin=vmin,
+        vmax=vmax,
+        aspect=aspect,
+        origin=origin,
+        interpolation=interpolation,
+    )
+
+    # Only label columns when the file actually named them and there are few
+    # enough for the labels to be legible.
+    if labels is not None and len(labels) <= _MAX_TICK_LABELS:
+        ax.set_xticks(np.arange(len(labels)))
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+
+    if colorbar:
+        bar_ = fig.colorbar(image, ax=ax)
+        bar_.set_label(cbar_label or ("ratio" if other is not None else "value"))
+
+    if cfg.xlabel is None:
+        cfg.xlabel = "column"
+    if cfg.ylabel is None:
+        cfg.ylabel = "row"
+    if cfg.title is None:
+        cfg.title = f"{ds.source} / {other.source}" if other is not None else ds.source
+    _apply_axes(ax, cfg, default_legend=False)
+    return _finish(fig, cfg)
+
+
 # ----------------------------------------------------------------------
 # Shared helpers
 # ----------------------------------------------------------------------
+# Above this many columns, per-column tick labels become unreadable.
+_MAX_TICK_LABELS = 30
+
+
+def _finite_min(matrix: np.ndarray) -> float:
+    """Smallest finite value in ``matrix``, or NaN if it has none.
+
+    Selects the finite cells explicitly rather than using :func:`numpy.nanmin`,
+    which warns on an all-NaN input — precisely the case the caller wants to
+    report cleanly.
+    """
+    finite = matrix[np.isfinite(matrix)]
+    return float(finite.min()) if finite.size else float("nan")
+
+
+def _zero_centred_halfrange(matrix: np.ndarray, vmin: float | None, vmax: float | None) -> float:
+    """Half-width of a color scale centred on zero.
+
+    Uses the larger magnitude of the supplied limits, or of the data when no
+    limits are given, so that the scale runs from ``-halfrange`` to
+    ``+halfrange`` and zero lands exactly on the midpoint of the colormap.
+    """
+    if vmin is None and vmax is None:
+        finite = matrix[np.isfinite(matrix)]
+        if not finite.size:
+            raise PlotError("cannot centre the color scale on zero: the matrix has no finite values")
+        halfrange = float(np.max(np.abs(finite)))
+    else:
+        halfrange = max(abs(vmin or 0.0), abs(vmax or 0.0))
+    if halfrange == 0:
+        raise PlotError("cannot centre the color scale on zero: every value is zero")
+    return halfrange
+
+
+def _matrix(ds: Dataset, cols: Sequence[int | str] | None) -> tuple[np.ndarray, list[str] | None]:
+    """Return the dataset as a 2-D matrix, plus column labels if it had a header.
+
+    Non-numeric columns are excluded by default, so a leading text label column
+    does not have to be stripped by hand.
+    """
+    refs = list(cols) if cols is not None else list(ds.numeric_columns)
+    if not refs:
+        raise PlotError(f"{ds.source} has no numeric columns to plot")
+    matrix = ds.columns(refs)
+    labels = [ds.name_of(r) for r in refs] if ds.names is not None else None
+    return matrix, labels
+
+
 def _format_tick(value: float) -> str:
     """Render a numeric tick label without a trailing ``.0`` for integers."""
     if float(value).is_integer():

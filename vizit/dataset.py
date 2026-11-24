@@ -2,10 +2,15 @@
 The :class:`Dataset` container — vizit's in-memory representation of a numeric
 data table.
 
-A :class:`Dataset` wraps a single 2-D :class:`numpy.ndarray` together with
-optional column names parsed from a header line. It deliberately holds only
-homogeneous numeric data (``float64``); reading, comment stripping and header
-detection are the responsibility of :mod:`vizit.loader`.
+A :class:`Dataset` wraps a single 2-D :class:`numpy.ndarray` (``float64``)
+together with optional column names parsed from a header line. Reading, comment
+stripping and header detection are the responsibility of :mod:`vizit.loader`.
+
+Columns that are not numeric — a stage label, a residue name — are kept as
+``NaN`` and listed in :attr:`Dataset.non_numeric`. They cost nothing until you
+ask for them: :meth:`Dataset.column` raises only when a non-numeric column is
+actually selected, so a text column sitting next to the numbers you care about
+never blocks a plot.
 
 Column indexing convention
 --------------------------
@@ -18,11 +23,11 @@ other part of the codebase performs index arithmetic.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-from ._errors import ColumnError
+from ._errors import ColumnError, DataError
 
 __all__ = ["Dataset"]
 
@@ -31,17 +36,26 @@ __all__ = ["Dataset"]
 class Dataset:
     """Tabular numeric data: a 2-D array plus optional column names.
 
+    Columns that could not be parsed as numbers (a label column, say) are held
+    as ``NaN`` and recorded in :attr:`non_numeric`. They are not an error in
+    themselves — only selecting one for plotting is. See :meth:`column`.
+
     Parameters
     ----------
     data : numpy.ndarray
         Two-dimensional array of shape ``(n_rows, n_cols)`` and dtype
-        ``float64``. A single-column file yields shape ``(n_rows, 1)``.
+        ``float64``. A single-column file yields shape ``(n_rows, 1)``. Cells
+        that did not parse as numbers hold ``NaN``.
     names : list of str or None
         Column names parsed from a header line, or ``None`` when the source had
         no header. When provided, its length must equal ``n_cols``.
     source : str
         Human-readable origin of the data (a file path or ``"<stdin>"``), used
         to build default plot titles.
+    non_numeric : dict, optional
+        Maps the 0-based index of each non-numeric column to the
+        ``(line number, token)`` of the first value in it that failed to parse.
+        Empty (the default) when every column is numeric.
 
     Raises
     ------
@@ -53,6 +67,7 @@ class Dataset:
     data: np.ndarray
     names: list[str] | None
     source: str
+    non_numeric: dict[int, tuple[int, str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.data.ndim != 2:
@@ -75,6 +90,18 @@ class Dataset:
 
     def __len__(self) -> int:
         return self.n_rows
+
+    @property
+    def numeric_columns(self) -> list[int]:
+        """1-based indices of the columns that parsed fully as numbers.
+
+        Returns
+        -------
+        list of int
+            Plottable columns, in file order. Columns holding text (and so
+            recorded in :attr:`non_numeric`) are excluded.
+        """
+        return [i + 1 for i in range(self.n_cols) if i not in self.non_numeric]
 
     # ------------------------------------------------------------------
     # Column access (all public methods take 1-based indices or names)
@@ -117,6 +144,22 @@ class Dataset:
             return stripped.index(name)
         raise ColumnError(f"{self.source} has no column named {name!r}; available names: {', '.join(self.names)}")
 
+    def _require_numeric(self, idx: int) -> None:
+        """Raise if the 0-based column ``idx`` holds values that are not numbers."""
+        if idx not in self.non_numeric:
+            return
+        lineno, token = self.non_numeric[idx]
+        label = f"column {idx + 1}"
+        if self.names is not None:
+            label = f"column {idx + 1} ({self.names[idx]!r})"
+        usable = self.numeric_columns
+        hint = (
+            f"numeric columns are {', '.join(str(c) for c in usable)}"
+            if usable
+            else "this file has no numeric columns"
+        )
+        raise DataError(f"{self.source}: {label} is not numeric — line {lineno} contains {token!r}; {hint}")
+
     def column(self, ref: int | str) -> np.ndarray:
         """Return a single column as a 1-D array.
 
@@ -129,8 +172,19 @@ class Dataset:
         -------
         numpy.ndarray
             A 1-D view of the requested column.
+
+        Raises
+        ------
+        ColumnError
+            If the index is out of range or the name is not found.
+        DataError
+            If the column exists but does not hold numeric data. Non-numeric
+            columns are only rejected here, at the point of use — loading a file
+            that contains one is fine.
         """
-        return self.data[:, self.resolve(ref)]
+        idx = self.resolve(ref)
+        self._require_numeric(idx)
+        return self.data[:, idx]
 
     def columns(self, refs: Sequence[int | str]) -> np.ndarray:
         """Return several columns as a 2-D array, in the requested order.
@@ -144,8 +198,17 @@ class Dataset:
         -------
         numpy.ndarray
             Array of shape ``(n_rows, len(refs))``.
+
+        Raises
+        ------
+        ColumnError
+            If an index is out of range or a name is not found.
+        DataError
+            If any selected column does not hold numeric data.
         """
         idxs = [self.resolve(r) for r in refs]
+        for idx in idxs:
+            self._require_numeric(idx)
         return self.data[:, idxs]
 
     def name_of(self, ref: int | str) -> str:

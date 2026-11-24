@@ -50,17 +50,51 @@ vizit reads whitespace- or delimiter-separated numeric tables:
 
 * **Comments.** Lines whose first non-blank character is ``#`` or ``@`` are
   ignored (configurable with ``--comments``). Blank lines are skipped.
-* **Separators.** Whitespace, comma, tab and semicolon are auto-detected.
-  Force one with ``-s/--sep`` (e.g. ``-s ,`` for CSV).
-* **Headers.** If the first non-comment line is not all-numeric it is taken as
-  column names, which can then be used in place of indices
-  (``-c energy``). Force the behaviour with ``--header`` / ``--no-header``.
+* **Separators.** Comma, tab, semicolon and whitespace are auto-detected;
+  explicit delimiters take precedence over whitespace, so a tab-separated file
+  with spaces inside a text field is still split correctly. Force one with
+  ``-s/--sep`` (e.g. ``-s ,`` for CSV).
+* **Headers.** If the first non-comment line looks like a row of names sitting
+  above numbers, it is taken as column names, which can then be used in place of
+  indices (``-c energy``). Force the behaviour with ``--header`` /
+  ``--no-header``.
 
 .. note::
 
    Column names are read from a plain (non-comment) header line. A
    ``#``-prefixed line is treated as a comment and skipped, so it is **not**
    used for names.
+
+Text columns
+------------
+
+Only the columns you actually plot need to be numeric. Scientific data files
+routinely carry a label column alongside the numbers::
+
+    # stage   step   T_K       E_pot_kJ_per_mol
+    equil     10     597.297   343.947070
+    equil     20     594.294   332.271920
+    prod      30     300.000   -322.115226
+
+Column 1 here is text. vizit reads the file happily and simply skips it:
+
+.. code-block:: console
+
+   $ vizit line DEMO_ENERGY.dat -c 4          # plot the energy
+   $ vizit line DEMO_ENERGY.dat -x 2 -c 3,4   # step vs temperature and energy
+   $ vizit line DEMO_ENERGY.dat               # no -c: plots numeric columns 2, 3, 4
+
+When columns are not named explicitly, vizit plots the numeric columns and
+ignores text ones. Asking for a text column *is* an error, reported precisely:
+
+.. code-block:: console
+
+   $ vizit line DEMO_ENERGY.dat -c 1
+   vizit: DEMO_ENERGY.dat: column 1 is not numeric — line 3 contains 'equil'; numeric columns are 2, 3, 4
+
+From Python, :attr:`~vizit.Dataset.numeric_columns` lists the plottable columns
+and :attr:`~vizit.Dataset.non_numeric` maps each text column to the first value
+that failed to parse.
 
 Column indexing
 ---------------

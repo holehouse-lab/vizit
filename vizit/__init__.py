@@ -23,7 +23,7 @@ from __future__ import annotations
 from ._errors import ColumnError, DataError, PlotError, VizitError
 from .dataset import Dataset
 from .loader import load
-from .plotting import PlotConfig, bar, hist, line, scatter
+from .plotting import PlotConfig, bar, heatmap, hist, line, scatter
 
 # Version is managed by versioningit. At build/install time it writes
 # vizit/_version.py; fall back to the installed package metadata otherwise.
@@ -46,6 +46,7 @@ __all__ = [
     "VizitError",
     "__version__",
     "bar",
+    "heatmap",
     "hist",
     "line",
     "load",

@@ -20,6 +20,7 @@ from ._errors import VizitError
 from .backend import configure_backend
 
 if TYPE_CHECKING:
+    from .dataset import Dataset
     from .plotting import PlotConfig
 
 __all__ = ["main", "build_parser"]
@@ -68,7 +69,7 @@ def _add_io_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_axis_args(parser: argparse.ArgumentParser) -> None:
+def _add_axis_args(parser: argparse.ArgumentParser, *, grid_default: bool = True) -> None:
     group = parser.add_argument_group("axes")
     group.add_argument("--xlabel", help="x-axis label")
     group.add_argument("--ylabel", help="y-axis label")
@@ -80,8 +81,10 @@ def _add_axis_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--symlogx", action="store_true", help="symmetric-log x-axis")
     group.add_argument("--symlogy", action="store_true", help="symmetric-log y-axis")
     grid = group.add_mutually_exclusive_group()
-    grid.add_argument("--grid", dest="grid", action="store_true", default=True, help="show grid (default)")
-    grid.add_argument("--no-grid", dest="grid", action="store_false", help="hide grid")
+    grid_help = "show grid" + (" (default)" if grid_default else "")
+    no_grid_help = "hide grid" + ("" if grid_default else " (default)")
+    grid.add_argument("--grid", dest="grid", action="store_true", default=grid_default, help=grid_help)
+    grid.add_argument("--no-grid", dest="grid", action="store_false", help=no_grid_help)
     group.add_argument("--no-legend", dest="legend", action="store_false", default=True, help="hide legend")
 
 
@@ -100,9 +103,9 @@ def _add_output_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--no-show", dest="show", action="store_false", default=True, help="do not open a window")
 
 
-def _add_common_args(parser: argparse.ArgumentParser) -> None:
+def _add_common_args(parser: argparse.ArgumentParser, *, grid_default: bool = True) -> None:
     _add_io_args(parser)
-    _add_axis_args(parser)
+    _add_axis_args(parser, grid_default=grid_default)
     _add_style_args(parser)
     _add_output_args(parser)
 
@@ -152,6 +155,61 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_bar)
     p_bar.add_argument("-c", "--cols", help="1-based value columns, comma-separated")
     p_bar.add_argument("-x", help="1-based column for bar positions (default: row index)")
+
+    # heatmap
+    p_heat = sub.add_parser(
+        "heatmap",
+        help="heatmap of a matrix, or the ratio of two matrices",
+        description=(
+            "Plot a CSV/TSV matrix as a heatmap. Give a second file to plot the "
+            "element-wise ratio of the two matrices (FILE / FILE2)."
+        ),
+    )
+    _add_common_args(p_heat, grid_default=False)
+    p_heat.add_argument(
+        "denominator",
+        nargs="?",
+        metavar="FILE2",
+        help="optional second matrix; the heatmap becomes the ratio FILE / FILE2",
+    )
+    p_heat.add_argument("-c", "--cols", help="1-based columns forming the matrix, comma-separated")
+    p_heat.add_argument("--vmin", type=float, help="lower limit of the color scale (default: data min)")
+    p_heat.add_argument("--vmax", type=float, help="upper limit of the color scale (default: data max)")
+    p_heat.add_argument(
+        "--cmap",
+        help="matplotlib colormap name (default: matplotlib's; 'seismic' when two files are given)",
+    )
+    p_heat.add_argument("--cbar-label", dest="cbar_label", help="colorbar label")
+    p_heat.add_argument("--no-colorbar", dest="colorbar", action="store_false", default=True, help="hide the colorbar")
+    # A log scale cannot span zero, so these two are inherently incompatible.
+    scale = p_heat.add_mutually_exclusive_group()
+    scale.add_argument(
+        "--log-color",
+        dest="log_color",
+        action="store_true",
+        help="logarithmic color scale (needs strictly positive values)",
+    )
+    scale.add_argument(
+        "--auto-midpoint-zero",
+        dest="auto_midpoint_zero",
+        action="store_true",
+        help="centre the color scale on zero, so zero takes the midpoint colour (white, in seismic)",
+    )
+    p_heat.add_argument(
+        "--aspect",
+        default="auto",
+        choices=["auto", "equal"],
+        help="'auto' fills the axes (default); 'equal' keeps cells square",
+    )
+    p_heat.add_argument(
+        "--origin",
+        default="upper",
+        choices=["upper", "lower"],
+        help="'upper' (default) puts the first row at the top",
+    )
+    p_heat.add_argument(
+        "--interpolation", default="nearest", help="imshow interpolation (default: nearest, i.e. raw cells)"
+    )
 
     return parser
 
@@ -239,16 +297,36 @@ def _dispatch(args: argparse.Namespace) -> None:
     from . import plotting
     from .loader import load
 
-    ds = load(
-        args.filename,
-        sep=args.sep,
-        comments=args.comments,
-        header=args.header,
-        skip_rows=args.skip_rows,
-    )
+    def _load(path: str) -> Dataset:
+        return load(
+            path,
+            sep=args.sep,
+            comments=args.comments,
+            header=args.header,
+            skip_rows=args.skip_rows,
+        )
+
+    ds = _load(args.filename)
     config = _config_from_args(args)
 
-    if args.command == "line":
+    if args.command == "heatmap":
+        plotting.heatmap(
+            ds,
+            _load(args.denominator) if args.denominator else None,
+            cols=_parse_cols(args.cols),
+            vmin=args.vmin,
+            vmax=args.vmax,
+            cmap=args.cmap,
+            colorbar=args.colorbar,
+            cbar_label=args.cbar_label,
+            log_color=args.log_color,
+            auto_midpoint_zero=args.auto_midpoint_zero,
+            aspect=args.aspect,
+            origin=args.origin,
+            interpolation=args.interpolation,
+            config=config,
+        )
+    elif args.command == "line":
         plotting.line(
             ds,
             cols=_parse_cols(args.cols),
